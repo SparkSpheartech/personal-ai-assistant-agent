@@ -1,54 +1,49 @@
 import logging
 import memory
 import fetch_google
+import security  # ✅ Ensures Kill Switch is active
 
-# Configure logging for better debugging
+# ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def process_query(user_query):
+def search_query(user_query):
     """
-    1. Check if the query exists in memory (SQLite/JSON).
-    2. If found, return the saved response.
-    3. If not found, fetch from Google, save it, and return.
-    4. Handles invalid inputs appropriately.
+    🔍 **Intelligent Search Process**
+    1️⃣ Check if the response is already stored in memory.
+    2️⃣ If found, return it instantly (avoiding unnecessary API calls).
+    3️⃣ If not found and internet is enabled, fetch from Google/Wikipedia.
+    4️⃣ If Kill Switch is active, restrict external API access.
+    5️⃣ Store new results in memory for future efficiency.
     """
-    
-    # Ignore empty inputs or non-question statements
-    if not user_query.strip():
-        return "❌ OYNX: Please enter a valid question or query."
 
-    common_phrases = ["hi", "hello", "hey", "how are you", "good morning", "good night"]
-    if user_query.lower() in common_phrases:
-        return f"🤖 OYNX: Hello! How can I assist you today?"
+    # ✅ 1️⃣ Check Memory First
+    past_response = memory.get_from_memory(user_query)
+    if past_response:
+        logging.info(f"💾 Retrieved from memory: {user_query}")
+        return f"(💾 Memory) {past_response}"
 
-    try:
-        # Step 1: Check memory first
-        past_response = memory.get_from_memory(user_query)
-        if past_response:
-            logging.info(f"Retrieved from memory: {user_query}")
-            return f"(💾 Retrieved from memory) {past_response}"
+    # ✅ 2️⃣ Check if the Kill Switch is active
+    if security.is_internet_disabled():
+        logging.warning("🚫 Internet access blocked. Cannot fetch new search results.")
+        return "❌ OYNX: Internet is disabled. Try again later or enable online mode."
 
-        # Step 2: Fetch new result from Google
-        logging.info(f"Fetching new results for query: {user_query}")
-        result = fetch_google.fetch_google_content(user_query)
+    # ✅ 3️⃣ Fetch New Data (Google, Wikipedia, ArXiv)
+    logging.info(f"🔎 Searching online for: {user_query}")
+    search_results = fetch_google.fetch_google_content(user_query)
 
-        # Step 3: Handle API response properly
-        if isinstance(result, dict) and result.get("status") == "success":
-            title = result.get("title", "No title available")
-            content = result.get("content", "No content found")
-            url = result.get("url", "No URL provided")
+    # ✅ 4️⃣ Handle API Response
+    if isinstance(search_results, dict) and search_results.get("status") == "success":
+        formatted_results = search_results.get("formatted_results", "No relevant information found.")
 
-            # Prepare response
-            answer = f"**{title}**\n{content}\n🔗 {url}"
-            
-            # Save to memory for future queries
-            memory.save_to_memory(user_query, answer)
-            return answer
+        # ✅ Save to memory for faster future searches
+        memory.save_to_memory(user_query, formatted_results)
+        return formatted_results
 
-        else:
-            logging.warning(f"Google fetch failed for query: {user_query}")
-            return f"❌ OYNX: Sorry, I couldn't find anything relevant for '{user_query}'. Try rephrasing your question!"
+    # ✅ 5️⃣ Handle No Results Case
+    logging.warning(f"⚠️ No search results found for: {user_query}")
+    return f"❌ OYNX: Sorry, I couldn't find anything relevant for '{user_query}'. Try a different query."
 
-    except Exception as e:
-        logging.exception(f"Unexpected error processing query: {user_query}")
-        return "⚠️ OYNX: An error occurred while processing your request. Please try again later."
+# ✅ Run standalone for testing
+if __name__ == "__main__":
+    test_query = "What is Quantum Computing?"
+    print(search_query(test_query))

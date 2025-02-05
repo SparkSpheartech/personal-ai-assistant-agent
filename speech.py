@@ -1,155 +1,127 @@
-# chatbot.py - Main chatbot logic
 import os
-import sys
-import json
-import time
-import itertools
-import threading
-import search
+import logging
 import memory
-import book_downloader
-import book_analysis
-import fetch_google
-from google.cloud import texttospeech  # ✅ Google Cloud TTS
-from openai import OpenAI
-from speech import Speech  # Importing speech module
+import security
+import speech_recognition as sr
+from google.cloud import texttospeech
+from pydub import AudioSegment
+from pydub.playback import play
 
-# ✅ Set Google Application Credentials explicitly in the script
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"C:\Users\shaza\.lmstudio\Oynx_Ai\ai-voice-449905-45464ad2e6bb.json"
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Define Assistant Name
-ASSISTANT_NAME = "OYNX"
+# Load Google Cloud TTS Credentials
+GOOGLE_TTS_CLIENT = texttospeech.TextToSpeechClient()
 
-# Initialize LM Studio Client
-client = OpenAI(base_url="http://127.0.0.1:1234/V1", api_key="lm-studio")
-MODEL = "deepseek-r1-distill-qwen-7b"  # Upgraded to a more advanced model
+# Kill Switch Support - Prevents Speech Processing if Security Mode is ON
+def is_speech_allowed():
+    """Checks if speech features are allowed based on security settings."""
+    if security.is_internet_disabled():
+        logging.warning("🛑 Speech functions disabled: Security mode is active.")
+        return False
+    return True
 
-# === Spinner Class (For Thinking Animation) ===
-class Spinner:
-    def __init__(self, message="Processing..."):
-        self.spinner = itertools.cycle(["-", "/", "|", "\\"])
-        self.busy = False
-        self.delay = 0.03
-        self.message = message
-        self.thread = None
-
-    def write(self, text):
-        sys.stdout.write(text)
-        sys.stdout.flush()
-
-    def _spin(self):
-        while self.busy:
-            self.write(f"\r{self.message} {next(self.spinner)}")
-            time.sleep(self.delay)
-        self.write("\r\033[K")
-
-    def __enter__(self):
-        self.busy = True
-        self.thread = threading.Thread(target=self._spin)
-        self.thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.busy = False
-        time.sleep(self.delay)
-        if self.thread:
-            self.thread.join()
-        self.write("\r")
-
-# === Smart User Setup ===
-def setup_user():
-    """Initializes user profile and settings."""
-    print(f"\n🎩 Welcome! I am {ASSISTANT_NAME}, your personal butler. Preparing your settings...")
-    user_name = input("\n💡 How shall I address you? ").strip()
-    profile = memory.get_user_profile(user_name)
+# === TEXT-TO-SPEECH (TTS) FUNCTION (PLAYS DIRECTLY IN PYTHON) ===
+def speak(text, voice_type="en-US-Wavenet-D", speaking_rate=1.0):
+    """
+    Converts text to speech using Google Cloud TTS and plays it automatically within Python.
+    No external applications required.
+    """
+    if not is_speech_allowed():
+        return  # Prevent speech when kill switch is on
     
-    default_preferences = {
-        "personality": "Butler",
-        "speech_enabled": False,
-        "search_enabled": True,
-        "ai_response_enabled": True
-    }
+    logging.info(f"🗣️ Speaking: {text[:50]}...")  # Log partial text
+
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+
+    # Select the voice
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US",
+        name=voice_type,
+        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+    )
+
+    # Modulate speech based on emotion (slower for serious responses)
+    if any(word in text.lower() for word in ["warning", "alert", "caution"]):
+        speaking_rate = 0.9  # Speak slower for serious messages
     
-    user_preferences = {**default_preferences, **(profile or {})}
-    if not profile:
-        memory.create_user_profile(user_name)
-        memory.update_user_preference(user_name, "preferences", json.dumps(user_preferences))
-    
-    voice_preference = input("\n🎤 Would you like OYNX to speak? (yes/no): ").strip().lower()
-    user_preferences["speech_enabled"] = voice_preference == "yes"
-    
-    print(f"\n✅ Setup complete! Welcome, {user_name}.")
-    return user_name, user_preferences
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+        speaking_rate=speaking_rate
+    )
 
-# === AI Bot Logic ===
-def generate_ai_response(user_input, conversation_history, user_preferences):
-    """Generates AI responses and speaks if enabled."""
-    stored_knowledge = memory.get_from_memory(user_input) or None
+    # Generate Speech
+    response = GOOGLE_TTS_CLIENT.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
 
-    messages = [
-        {"role": "system", "content": "You are OYNX, a sophisticated AI butler with deep knowledge and a calm, authoritative tone."}
-    ]
+    # Convert binary audio to playable format
+    audio_data = response.audio_content
+    temp_audio_file = "temp_speech_output.wav"
 
-    if stored_knowledge:
-        messages.append({"role": "user", "content": f"Relevant stored knowledge: {stored_knowledge}"})
+    with open(temp_audio_file, "wb") as out:
+        out.write(audio_data)
 
-    for user_msg, bot_msg in conversation_history[-5:]:
-        messages.append({"role": "user", "content": user_msg})
-        messages.append({"role": "assistant", "content": bot_msg})
+    # Load and play the audio file directly in Python
+    audio = AudioSegment.from_wav(temp_audio_file)
+    play(audio)
 
-    messages.append({"role": "user", "content": user_input})
+    # Cleanup temporary file
+    os.remove(temp_audio_file)
 
-    with Spinner(f"{ASSISTANT_NAME} is processing your request..."):
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages
-        )
+# === SPEECH RECOGNITION (VOICE INPUT) FUNCTION ===
+def listen():
+    """
+    Uses speech recognition to capture voice input.
+    Returns transcribed text.
+    """
+    if not is_speech_allowed():
+        return "Speech is disabled due to security settings."
 
-    ai_response = response.choices[0].message.content.strip("</think>")  # Remove unwanted XML tags
+    recognizer = sr.Recognizer()
+    mic = sr.Microphone()
 
-    # ✅ If AI doesn't know, fallback to search
-    if "I am not sure" in ai_response or "I do not know" in ai_response:
-        with Spinner(f"{ASSISTANT_NAME} is searching the internet..."):
-            search_results = fetch_google.fetch_google_content(user_input)
-            if search_results["status"] == "success":
-                ai_response += "\n\n" + search_results["formatted_results"]
-    
-    # ✅ Store response in memory for future context
-    memory.save_to_memory(user_input, ai_response)
+    with mic as source:
+        logging.info("🎙️ Listening for voice input...")
+        recognizer.adjust_for_ambient_noise(source)
+        try:
+            audio = recognizer.listen(source, timeout=5)
+            user_input = recognizer.recognize_google(audio)
+            logging.info(f"🗣️ Recognized: {user_input}")
+            return user_input
+        except sr.UnknownValueError:
+            logging.warning("🤷 Speech Recognition: Could not understand audio.")
+            return "I didn't catch that. Could you repeat?"
+        except sr.RequestError:
+            logging.error("🚫 Speech Recognition: API unavailable.")
+            return "Speech recognition is currently unavailable."
 
-    print(f"\n{ASSISTANT_NAME}: {ai_response}")
+# === MEMORY INTEGRATION ===
+def save_speech_preference(user_name, enable_speech):
+    """Saves user's speech preference in memory."""
+    memory.update_user_preference(user_name, "speech_enabled", enable_speech)
 
-    if user_preferences["speech_enabled"]:
-        Speech.speak(ai_response)  # Deeper, more authoritative voice
+def get_speech_preference(user_name):
+    """Retrieves user's speech preference from memory."""
+    prefs = memory.get_user_profile(user_name)
+    return prefs.get("speech_enabled", False) if prefs else False
 
-    return ai_response
+# === ADMIN OVERRIDE FOR SPEECH SETTINGS ===
+def admin_toggle_speech():
+    """
+    Allows an admin to manually enable/disable speech functions.
+    """
+    current_status = is_speech_allowed()
+    new_status = not current_status
 
-# === Chatbot Loop ===
-def chat_loop():
-    """Main chatbot loop with voice control."""
-    user_name, user_preferences = setup_user()
-    conversation_history = []
-
-    print(f"\n✅ Voice Mode {'Enabled' if user_preferences['speech_enabled'] else 'Disabled'}. I await your instructions.")
-
-    while True:
-        if user_preferences["speech_enabled"]:
-            user_input = Speech.listen()
-            if not user_input:
-                continue
-        else:
-            user_input = input("\n📝 You: ").strip()
-            if not user_input:
-                continue
-
-        if user_input.lower() in ["quit", "exit"]:
-            print(f"{ASSISTANT_NAME}: It has been a pleasure, {user_name}. Farewell.")
-            if user_preferences["speech_enabled"]:
-                Speech.speak(f"It has been a pleasure, {user_name}. Farewell.", voice_type="Wavenet-F")  
-            break
-
-        ai_response = generate_ai_response(user_input, conversation_history, user_preferences)
-        conversation_history.append((user_input, ai_response))
+    if new_status:
+        security.enable_internet()  # Enable speech-related services
+        logging.info("✅ Admin enabled speech functions.")
+        return "Speech features have been enabled."
+    else:
+        security.disable_internet()  # Block speech-related services
+        logging.warning("🛑 Admin disabled speech functions.")
+        return "Speech features have been disabled."
 
 if __name__ == "__main__":
-    chat_loop()
+    print("🎙️ Speech module initialized!")
+    test_text = "Hello, this is OYNX. I am ready to assist you."
+    speak(test_text)

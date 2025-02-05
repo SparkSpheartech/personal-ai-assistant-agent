@@ -1,28 +1,31 @@
 import os
 import sqlite3
 import requests
-from search import process_query  # ✅ Correct Function
 import logging
 import urllib.parse
 import fetch_google
+import security  # ✅ Security Module (for kill switch)
+import memory    # ✅ Memory Module (for knowledge storage)
+import book_analysis  # ✅ AI-powered book processing
+from search import process_query
 from bs4 import BeautifulSoup
 from pdfminer.high_level import extract_text
 from ebooklib import epub
 from openai import OpenAI
 
-# Configure Logging
+# ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# LM Studio AI Client
+# ✅ Initialize AI Client (OYNX AI Pipeline)
 client = OpenAI(base_url="http://127.0.0.1:1234/V1", api_key="lm-studio")
 MODEL = "deepseek-r1-distill-qwen-7b"
 
-# Database File & Secure Download Directory
-DB_FILE = "memory.db"
-DOWNLOAD_DIR = "secure_downloads"
+# ✅ Database & Secure Download Directories
+DB_FILE = "data/memory.db"  # ✅ Moved to `data/` directory
+DOWNLOAD_DIR = "data/secure_downloads"  # ✅ Moved to `data/`
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# Book Sources
+# ✅ Book Sources
 LIBGEN_SEARCH_URL = "http://libgen.rs/search.php?req={}&res=25&columns=def"
 LIBGEN_DOWNLOAD_URL = "http://library.lol/main/{}"
 OPEN_LIBRARY_SEARCH_URL = "https://openlibrary.org/search.json?q={}"
@@ -43,18 +46,14 @@ def initialize_db():
                             source TEXT NOT NULL,
                             extracted_text TEXT DEFAULT NULL
                           )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS knowledge (
-                            topic TEXT PRIMARY KEY,
-                            content TEXT NOT NULL
-                          )''')
         conn.commit()
 
 initialize_db()
 
-# === SECURE DOWNLOAD FUNCTION ===
+# === SECURE BOOK DOWNLOAD ===
 def download_book_securely(book_data):
-    """Asks user for confirmation and securely downloads a book."""
+    """Downloads a book with user confirmation and security checks."""
+    
     title, author, file_format, download_url = book_data["title"], book_data["author"], book_data["file_format"], book_data["download_url"]
     
     confirm = input(f"⚠️ Do you want to download '{title}' by {author}? (yes/no): ").strip().lower()
@@ -84,65 +83,37 @@ def download_book_securely(book_data):
         return file_path
 
     except Exception as e:
-        print(f"❌ Download Failed: {e}")
+        logging.error(f"❌ Download Failed: {e}")
         return None
 
 # === BOOK TEXT EXTRACTION ===
-def extract_text_from_pdf(file_path):
-    try:
-        return extract_text(file_path)[:10000]  
-    except Exception as e:
-        logging.error(f"Failed to extract text from PDF: {e}")
-        return None
+def extract_text_from_book(file_path):
+    """Auto-detects file format and extracts text from PDF, EPUB, or TXT."""
+    return book_analysis.extract_book_text(file_path)
 
-def extract_text_from_epub(file_path):
-    try:
-        book = epub.read_epub(file_path)
-        text = ""
-        for item in book.items:
-            if isinstance(item, epub.EpubHtml):
-                soup = BeautifulSoup(item.content, "html.parser")
-                text += soup.get_text() + "\n"
-        return text[:10000]  
-    except Exception as e:
-        logging.error(f"Failed to extract text from EPUB: {e}")
-        return None
-
-def extract_book_text(file_path, file_format):
-    """Extracts text from a book."""
-    if file_format.lower() == "pdf":
-        return extract_text_from_pdf(file_path)
-    elif file_format.lower() == "epub":
-        return extract_text_from_epub(file_path)
-    else:
-        return None
-
-# === AI-POWERED CHAT MODE WITH CONTINUOUS LEARNING ===
+# === AI-POWERED KNOWLEDGE STORAGE ===
 def store_knowledge(topic, content):
-    """Stores extracted knowledge in the database for future AI responses."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO knowledge (topic, content) VALUES (?, ?)", (topic, content))
-        conn.commit()
+    """Stores extracted knowledge in the memory database."""
+    memory.store_knowledge(topic, content)
 
 def retrieve_knowledge(topic):
-    """Retrieves stored knowledge from the database."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT content FROM knowledge WHERE topic=?", (topic,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+    """Retrieves stored knowledge from memory database."""
+    return memory.retrieve_knowledge(topic)
+
+# === AI-ENHANCED BOOK ANALYSIS ===
+def analyze_book(title):
+    """Analyzes book content and provides an AI summary."""
+    return book_analysis.analyze_book(title)
 
 def ai_chat_mode(query):
     """Uses stored knowledge and AI model to answer user queries in real-time."""
-    stored_knowledge = retrieve_knowledge(query)
-
-    if stored_knowledge:
-        print(f"💡 Using stored knowledge on '{query}'")
-        knowledge_base = stored_knowledge
+    
+    # ✅ Check if internet access is enabled
+    if security.is_internet_disabled():
+        print("🛑 Internet access is disabled. Using offline knowledge only.")
+        stored_knowledge = retrieve_knowledge(query) or "No prior knowledge stored."
     else:
-        print(f"🌎 Fetching AI knowledge for '{query}'")
-        knowledge_base = "No prior knowledge stored."
+        stored_knowledge = retrieve_knowledge(query)
 
     prompt = f"""
     You are an expert AI. Answer the following user query using both stored knowledge and general AI understanding.
@@ -150,36 +121,68 @@ def ai_chat_mode(query):
     Query: {query}
 
     Stored Knowledge:
-    {knowledge_base}
+    {stored_knowledge}
 
     Provide a **concise and expert** response.
     """
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "system", "content": prompt}]
-    )
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "system", "content": prompt}]
+        )
 
-    answer = response.choices[0].message.content  # ✅ Correct
+        answer = response.choices[0].message.content  # ✅ Correct
+        
+        # ✅ Store new knowledge
+        if stored_knowledge == "No prior knowledge stored.":
+            store_knowledge(query, answer)
 
+        return answer
     
-    if stored_knowledge is None:
-        store_knowledge(query, answer)
-
-    return answer
+    except Exception as e:
+        logging.error(f"❌ AI response generation failed: {e}")
+        return "❌ AI could not generate a response."
 
 # === TESTING ===
 if __name__ == "__main__":
     while True:
-        user_input = input("\n💬 Ask me anything (type 'exit' to quit): ").strip()
-        if user_input.lower() == "exit":
-            print("👋 Goodbye!")
+        print("\n🛠 **OYNX AI Assistant**")
+        print("1️⃣ AI Chat Mode")
+        print("2️⃣ Search for Books")
+        print("3️⃣ Download a Book")
+        print("4️⃣ Analyze a Book")
+        print("5️⃣ Exit")
+
+        choice = input("\n💡 Select an option: ").strip()
+
+        if choice == "1":
+            user_input = input("\n💬 Ask me anything: ").strip()
+            print("\n🤖 AI Answer:")
+            print(ai_chat_mode(user_input))
+        
+        elif choice == "2":
+            search_query = input("\n🔍 Enter search term: ").strip()
+            print("\n📚 **Search Results:**")
+            print(process_query(search_query))
+        
+        elif choice == "3":
+            print("\n📖 **Downloading Books from LibGen**")
+            book_data = {
+                "title": input("Enter book title: ").strip(),
+                "author": input("Enter book author: ").strip(),
+                "file_format": input("Enter file format (pdf/epub/txt): ").strip(),
+                "download_url": input("Enter book download URL: ").strip()
+            }
+            download_book_securely(book_data)
+        
+        elif choice == "4":
+            book_title = input("\n📖 Enter book title to analyze: ").strip()
+            print(analyze_book(book_title))
+
+        elif choice == "5":
+            print("👋 Exiting OYNX AI Assistant...")
             break
-
-        # Secure Book Search
-        search_results = process_query(user_input)
-        print(search_results)
-
-        # AI Chat Mode with Continuous Learning
-        print("\n🤖 AI Answer:")
-        print(ai_chat_mode(user_input))
+        
+        else:
+            print("❌ Invalid selection. Try again.")

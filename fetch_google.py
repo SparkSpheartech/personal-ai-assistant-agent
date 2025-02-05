@@ -1,22 +1,21 @@
-# fetch_google.py - Enhanced Search & Knowledge Retrieval
+import os
 import requests
 import logging
 import sqlite3
 import time
 import wikipediaapi
 import arxiv
+import security  # ✅ Security Kill Switch
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Google API Key & Custom Search Engine ID (Ensure they are set in config.py)
-GOOGLE_API_KEY = "your-google-api-key"
-GOOGLE_CSE_ID = "your-google-cse-id"
+# ✅ Database for Search Caching
+SEARCH_STORAGE_DIR = "./search_storage"
+DB_FILE = os.path.join(SEARCH_STORAGE_DIR, "search_cache.db")
+os.makedirs(SEARCH_STORAGE_DIR, exist_ok=True)  # Ensure storage directory exists
 
-# Database for Search Caching
-DB_FILE = "search_cache.db"
-
-# Initialize Wikipedia API
+# ✅ Initialize Wikipedia API
 wiki_wiki = wikipediaapi.Wikipedia("en")
 
 def initialize_cache_db():
@@ -67,6 +66,10 @@ def save_to_cache(query, response):
 
 def fetch_wikipedia_content(search_query):
     """Fetches Wikipedia summaries for relevant topics."""
+    if security.is_internet_disabled():
+        logging.warning("⚠️ Kill switch activated: Wikipedia search blocked.")
+        return {"status": "error", "message": "Internet access is currently disabled."}
+
     try:
         page = wiki_wiki.page(search_query)
         if page.exists():
@@ -80,6 +83,10 @@ def fetch_wikipedia_content(search_query):
 
 def fetch_arxiv_content(search_query, max_results=3):
     """Fetches academic papers related to the search query from Arxiv."""
+    if security.is_internet_disabled():
+        logging.warning("⚠️ Kill switch activated: Arxiv search blocked.")
+        return {"status": "error", "message": "Internet access is currently disabled."}
+
     try:
         search = arxiv.Search(query=search_query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
         papers = list(search.results())
@@ -97,13 +104,19 @@ def fetch_arxiv_content(search_query, max_results=3):
 
 def fetch_google_content(search_query, num_results=5):
     """Fetches Google search results with HTTPS filtering."""
+    
+    if security.is_internet_disabled():
+        logging.warning("⚠️ Kill switch activated: Google search blocked.")
+        return {"status": "error", "message": "Internet access is currently disabled."}
+
     cached_result = get_cached_result(search_query)
     if cached_result:
         return cached_result  
+
     try:
         logging.info(f"🔎 Searching Google for: {search_query}")
         search_url = "https://www.googleapis.com/customsearch/v1"
-        params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID, "q": search_query, "num": num_results * 2}
+        params = {"key": os.getenv("GOOGLE_API_KEY"), "cx": os.getenv("GOOGLE_CSE_ID"), "q": search_query, "num": num_results * 2}
         response = requests.get(search_url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -136,6 +149,11 @@ def fetch_google_content(search_query, num_results=5):
 
 if __name__ == "__main__":
     test_query = "Quantum Computing"
+
+    # ✅ Enforce Security Protocols
+    if security.is_internet_disabled():
+        print("🚫 Internet access is disabled. Online features will not work.")
+
     print(fetch_google_content(test_query))
     print(fetch_wikipedia_content(test_query))
     print(fetch_arxiv_content(test_query))
