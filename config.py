@@ -1,0 +1,3 @@
+# config.py
+GOOGLE_API_KEY = "AIzaSyBawfmmEz86-QJC-v_FTAerj4P-TZHDbnY"
+GOOGLE_CSE_ID = "91b1eb19f26384ea9"
