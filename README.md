@@ -5,6 +5,16 @@
 
 ---
 
+## ❌ The Problem
+
+Personal AI assistants today are either cloud-dependent (Alexa, Siri, ChatGPT) or require complex setup. Cloud assistants send your voice and queries to external servers — a non-starter for privacy-conscious users. Local solutions demand Docker, Python environments, GPU drivers, and hours of configuration. Most people give up before they get a working assistant.
+
+**Before:** Cloud assistants with privacy concerns, complex DIY setups requiring DevOps skills, no unified voice+chat+memory experience, most people never get it working.
+
+**After (AI Agent):** One command launches a fully autonomous AI brain — voice input/output, conversation memory, book knowledge, web search, and security-hardened admin. Runs 100% locally on your existing hardware. No cloud. No complex setup. Your data stays yours.
+
+---
+
 ## 🧠 AI Agent Architecture
 
 ```mermaid
